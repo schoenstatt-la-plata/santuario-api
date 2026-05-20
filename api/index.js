@@ -149,7 +149,7 @@ async function saveSchedule(params) {
   return { ok: true, mensaje: 'Schedule guardado' };
 }
 
-// ── Endpoints nuevos: Misas semanales ─────────────────────
+// ── Endpoints existentes: Misas semanales ─────────────────
 
 async function getMisasSemanal(params) {
   const semana = params.semana || getLunesDeSemana(ahoraBA());
@@ -176,13 +176,11 @@ async function saveMisasSemanal(params) {
     return { ok: false, error: 'Datos inválidos' };
   }
 
-  // Borrar semana existente
   const snap = await db.collection('misas_semanal').where('semana', '==', semana).get();
   const batch = db.batch();
   snap.forEach(doc => batch.delete(doc.ref));
   await batch.commit();
 
-  // Guardar nuevas franjas
   const batch2 = db.batch();
   for (let dia = 0; dia <= 6; dia++) {
     const franjas = grilla[dia] || {};
@@ -197,10 +195,9 @@ async function saveMisasSemanal(params) {
   return { ok: true, mensaje: 'Misas semanales guardadas' };
 }
 
-// ── Endpoints nuevos: Misas mensuales ─────────────────────
+// ── Endpoints existentes: Misas mensuales ─────────────────
 
 async function getMisasMensual(params) {
-  // params.mes formato 'aaaa-mm'
   const mes = params.mes;
   if (!mes) return { ok: false, error: 'Falta parámetro mes' };
 
@@ -222,26 +219,24 @@ async function saveMisasMensual(params) {
   let grilla, mes;
   try {
     grilla = JSON.parse(params.grilla);
-    mes = params.mes; // 'aaaa-mm'
+    mes = params.mes;
   } catch (e) {
     return { ok: false, error: 'Datos inválidos' };
   }
 
   if (!mes) return { ok: false, error: 'Falta parámetro mes' };
 
-  // Borrar mes existente
   const snap = await db.collection('misas_mensual').where('mes', '==', mes).get();
   const batch = db.batch();
   snap.forEach(doc => batch.delete(doc.ref));
   await batch.commit();
 
-  // Guardar nuevas franjas (solo días que existen en ese mes)
   const [anio, mesNum] = mes.split('-').map(Number);
   const maxDias = new Date(anio, mesNum, 0).getDate();
 
   const batch2 = db.batch();
   for (let dia = 1; dia <= 31; dia++) {
-    if (dia > maxDias) continue; // omitir días inexistentes
+    if (dia > maxDias) continue;
     const franjas = grilla[dia] || {};
     for (const franja in franjas) {
       if (franjas[franja]) {
@@ -252,6 +247,66 @@ async function saveMisasMensual(params) {
   }
   await batch2.commit();
   return { ok: true, mensaje: 'Misas mensuales guardadas' };
+}
+
+// ── Endpoints nuevos: Santería ─────────────────────────────
+
+async function registrarSanteria(params) {
+  if (!params.hora_salida) return { ok: false, error: 'Falta hora de cierre' };
+  const ahora = ahoraBA();
+  const hoy = fechaHoy();
+
+  await db.collection('presencias_santeria').add({
+    timestamp: ahora.toISOString(),
+    hora_salida: params.hora_salida,
+    activo: true,
+    fecha: hoy,
+  });
+
+  return { ok: true, mensaje: 'Horario de santería registrado hasta las ' + params.hora_salida };
+}
+
+async function modificarSanteria(params) {
+  if (!params.hora_salida) return { ok: false, error: 'Falta hora de cierre' };
+  const hoy = fechaHoy();
+
+  const snap = await db.collection('presencias_santeria')
+    .where('fecha', '==', hoy)
+    .where('activo', '==', true)
+    .orderBy('timestamp', 'desc')
+    .limit(1)
+    .get();
+
+  if (snap.empty) return { ok: false, error: 'No se encontró registro para modificar' };
+
+  await snap.docs[0].ref.update({ hora_salida: params.hora_salida });
+  return { ok: true, mensaje: 'Horario de santería modificado a las ' + params.hora_salida };
+}
+
+async function estadoSanteria() {
+  const hoy = fechaHoy();
+  const ahora = ahoraBA();
+
+  const snap = await db.collection('presencias_santeria')
+    .where('fecha', '==', hoy)
+    .where('activo', '==', true)
+    .orderBy('timestamp', 'desc')
+    .limit(1)
+    .get();
+
+  let abierto = false;
+  let horaCierre = null;
+
+  if (!snap.empty) {
+    const doc = snap.docs[0].data();
+    const [hh, mm] = doc.hora_salida.split(':').map(Number);
+    const salida = new Date(ahora);
+    salida.setHours(hh, mm, 0, 0);
+    abierto = salida > ahora;
+    if (abierto) horaCierre = doc.hora_salida;
+  }
+
+  return { abierto, horaCierre };
 }
 
 // ── Router ─────────────────────────────────────────────────
@@ -267,15 +322,18 @@ module.exports = async (req, res) => {
   let result;
 
   try {
-    if      (action === 'estado')            result = await getEstado();
-    else if (action === 'registrar')         result = await registrar(req.query);
-    else if (action === 'modificar')         result = await modificar(req.query);
-    else if (action === 'getSchedule')       result = await getSchedule(req.query);
-    else if (action === 'saveSchedule')      result = await saveSchedule(req.query);
-    else if (action === 'getMisasSemanal')   result = await getMisasSemanal(req.query);
-    else if (action === 'saveMisasSemanal')  result = await saveMisasSemanal(req.query);
-    else if (action === 'getMisasMensual')   result = await getMisasMensual(req.query);
-    else if (action === 'saveMisasMensual')  result = await saveMisasMensual(req.query);
+    if      (action === 'estado')              result = await getEstado();
+    else if (action === 'registrar')           result = await registrar(req.query);
+    else if (action === 'modificar')           result = await modificar(req.query);
+    else if (action === 'getSchedule')         result = await getSchedule(req.query);
+    else if (action === 'saveSchedule')        result = await saveSchedule(req.query);
+    else if (action === 'getMisasSemanal')     result = await getMisasSemanal(req.query);
+    else if (action === 'saveMisasSemanal')    result = await saveMisasSemanal(req.query);
+    else if (action === 'getMisasMensual')     result = await getMisasMensual(req.query);
+    else if (action === 'saveMisasMensual')    result = await saveMisasMensual(req.query);
+    else if (action === 'registrarSanteria')   result = await registrarSanteria(req.query);
+    else if (action === 'modificarSanteria')   result = await modificarSanteria(req.query);
+    else if (action === 'estadoSanteria')      result = await estadoSanteria();
     else result = { error: 'Acción no reconocida' };
   } catch (e) {
     result = { ok: false, error: e.message };
